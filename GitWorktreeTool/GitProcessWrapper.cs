@@ -193,7 +193,7 @@ public class GitProcessWrapper
        if (p is null)
           return;
        
-        await p.WaitForExitAsync();
+       await p.WaitForExitAsync();
     }
 }
 
