@@ -219,10 +219,12 @@ internal static class Program
         PrintInfo($"Target worktree path: {targetPath}", debugEnabled);
         if (!Directory.Exists(targetPath))
         {
-            PrintError($"Target worktree directory does not exist: {targetPath}");
-            return ExitCodeError;
+            PrintWarning($"Target worktree directory does not exist: {targetPath}. skipping..");
         }
-        PrintInfo("Target worktree directory exists", debugEnabled);
+        else
+        {
+            PrintInfo("Target worktree directory exists", debugEnabled);
+        }
 
         await foreach (var entry in File.ReadLinesAsync(worktreeIncludePath).Select(line => line.Trim()))
         {
@@ -263,8 +265,7 @@ internal static class Program
             }
             else
             {
-                PrintError($"Entry '{entry}' not found on disk at '{sourcePath}'.");
-                return ExitCodeError;
+                PrintWarning($"Entry '{entry}' not found on disk at '{sourcePath}'. Skipping");
             }
         }
 
