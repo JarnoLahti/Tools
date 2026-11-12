@@ -49,8 +49,10 @@ public static class TestSessionFixture
         await CreateFile(".env", "ENV_VAR=test_value");
         await Container.ExecAsync(["mkdir", "-p", $"{RepoPath}/test"]);
         await CreateFile("test/test_file2.txt", "test_file2");
-        await CreateFile(".gitignore", ".env");
+        await CreateFile("test/.env", "NESTED_ENV_VAR=test_value");
+        await CreateFile(".gitignore", "*.env");
         await CreateFile(".worktreeinclude", ".env");
+        await Container.ExecAsync(["/bin/bash", "-c", $"echo '*.env' >> {RepoPath}/.worktreeinclude"]);
 
         await ExecCommandInDir("git add .", RepoPath);
         await ExecCommandInDir("git commit -m 'initial commit'", RepoPath);
@@ -263,6 +265,19 @@ public class IncludeCommandTests
 
         await Assert.That(exitCode).IsEqualTo(0);
         await Assert.That(await TestSessionFixture.FileExistsInContainer($".worktree/{target}/.env")).IsTrue();
+    }
+
+    [Test]
+    public async Task Include_GlobPattern_CopiesNestedMatchingFiles()
+    {
+        var target = TestSessionFixture.UniqueName("target");
+        await TestSessionFixture.RunTool($"init {target} main --no-include");
+
+        var (exitCode, _, _) = await TestSessionFixture.RunTool($"include {target} main");
+
+        await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(await TestSessionFixture.FileExistsInContainer($".worktree/{target}/.env")).IsTrue();
+        await Assert.That(await TestSessionFixture.FileExistsInContainer($".worktree/{target}/test/.env")).IsTrue();
     }
 }
 

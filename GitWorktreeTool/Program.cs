@@ -235,6 +235,48 @@ internal static class Program
 
             PrintInfo($"Processing entry: '{entry}'", debugEnabled);
 
+            if (entry.Contains('*') || entry.Contains('?'))
+            {
+                var pattern = entry.EndsWith('/') ? entry + "*" : entry;
+                var copied = 0;
+
+                foreach (var file in EnumerateRepoFiles(repoRoot))
+                {
+                    var relativePath = Path.GetRelativePath(repoRoot, file)
+                        .Replace(Path.DirectorySeparatorChar, '/');
+
+                    if (!MatchesGlob(relativePath, pattern))
+                    {
+                        continue;
+                    }
+
+                    if (!IsGitignored(relativePath, gitignoreEntries))
+                    {
+                        PrintInfo($"Glob match '{relativePath}' is not gitignored, skipping", debugEnabled);
+                        continue;
+                    }
+
+                    var destination = Path.Combine(targetPath,
+                        relativePath.Replace('/', Path.DirectorySeparatorChar));
+                    var destinationDir = Path.GetDirectoryName(destination);
+                    if (destinationDir is not null)
+                    {
+                        Directory.CreateDirectory(destinationDir);
+                    }
+
+                    File.Copy(file, destination, overwrite: true);
+                    PrintInfo($"Copied glob match: '{relativePath}'", debugEnabled);
+                    copied++;
+                }
+
+                if (copied == 0)
+                {
+                    PrintWarning($"Glob '{entry}' matched no gitignored files. Skipping");
+                }
+
+                continue;
+            }
+
             if (!IsGitignored(entry, gitignoreEntries))
             {
                 PrintInfo($"Entry '{entry}' is not gitignored, skipping", debugEnabled);
@@ -271,6 +313,44 @@ internal static class Program
 
         PrintInfo("IncludeWorktree completed successfully", debugEnabled);
         return ExitCodeSuccess;
+    }
+
+    private static IEnumerable<string> EnumerateRepoFiles(string directory)
+    {
+        var options = new EnumerationOptions
+        {
+            AttributesToSkip = FileAttributes.None,
+            IgnoreInaccessible = true,
+        };
+
+        foreach (var file in Directory.EnumerateFiles(directory, "*", options))
+        {
+            if (Path.GetFileName(file) == ".git")
+            {
+                continue;
+            }
+
+            yield return file;
+        }
+
+        foreach (var subDirectory in Directory.EnumerateDirectories(directory, "*", options))
+        {
+            var name = Path.GetFileName(subDirectory);
+            if (name is ".git" or WorktreeFolder)
+            {
+                continue;
+            }
+
+            if ((File.GetAttributes(subDirectory) & FileAttributes.ReparsePoint) != 0)
+            {
+                continue;
+            }
+
+            foreach (var file in EnumerateRepoFiles(subDirectory))
+            {
+                yield return file;
+            }
+        }
     }
 
     private static void CopyDirectory(string sourceDir, string destDir)
