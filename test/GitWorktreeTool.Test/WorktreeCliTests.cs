@@ -1,4 +1,4 @@
-using DotNet.Testcontainers.Containers;
+﻿using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Builders;
 
 namespace GitWorktreeTool.Test;
@@ -11,6 +11,8 @@ public static class TestSessionFixture
     [Before(TestSession)]
     public static async Task SetupContainer()
     {
+        ContainerRuntimeDetector.ConfigureEnvironment();
+
         var solutionRoot = ResolveSolutionRoot();
         if (!Directory.Exists(Path.Combine(solutionRoot, "GitWorktreeTool")))
         {
@@ -53,6 +55,10 @@ public static class TestSessionFixture
         await CreateFile(".gitignore", "*.env");
         await CreateFile(".worktreeinclude", ".env");
         await Container.ExecAsync(["/bin/bash", "-c", $"echo '*.env' >> {RepoPath}/.worktreeinclude"]);
+        await Container.ExecAsync(["mkdir", "-p", $"{RepoPath}/src/project"]);
+        await CreateFile("src/project/private.json", "{}");
+        await Container.ExecAsync(["/bin/bash", "-c", $"echo 'private.json' >> {RepoPath}/.gitignore"]);
+        await Container.ExecAsync(["/bin/bash", "-c", $"echo 'private.json' >> {RepoPath}/.worktreeinclude"]);
 
         await ExecCommandInDir("git add .", RepoPath);
         await ExecCommandInDir("git commit -m 'initial commit'", RepoPath);
@@ -278,6 +284,18 @@ public class IncludeCommandTests
         await Assert.That(exitCode).IsEqualTo(0);
         await Assert.That(await TestSessionFixture.FileExistsInContainer($".worktree/{target}/.env")).IsTrue();
         await Assert.That(await TestSessionFixture.FileExistsInContainer($".worktree/{target}/test/.env")).IsTrue();
+    }
+
+    [Test]
+    public async Task Include_PlainFileName_CopiesGitignoredFileFromSubfolder()
+    {
+        var target = TestSessionFixture.UniqueName("target");
+        await TestSessionFixture.RunTool($"init {target} main --no-include");
+
+        var (exitCode, _, _) = await TestSessionFixture.RunTool($"include {target} main");
+
+        await Assert.That(exitCode).IsEqualTo(0);
+        await Assert.That(await TestSessionFixture.FileExistsInContainer($".worktree/{target}/src/project/private.json")).IsTrue();
     }
 }
 

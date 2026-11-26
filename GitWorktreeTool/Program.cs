@@ -219,12 +219,14 @@ internal static class Program
         PrintInfo($"Target worktree path: {targetPath}", debugEnabled);
         if (!Directory.Exists(targetPath))
         {
-            PrintWarning($"Target worktree directory does not exist: {targetPath}. skipping..");
+            PrintError($"Target worktree directory does not exist: {targetPath}");
+            return ExitCodeError;
         }
-        else
-        {
-            PrintInfo("Target worktree directory exists", debugEnabled);
-        }
+        PrintInfo("Target worktree directory exists", debugEnabled);
+
+        var repoRelativeFiles = new Lazy<List<string>>(() => EnumerateRepoFiles(repoRoot)
+            .Select(file => ToRepoRelativePath(repoRoot, file))
+            .ToList());
 
         await foreach (var entry in File.ReadLinesAsync(worktreeIncludePath).Select(line => line.Trim()))
         {
@@ -235,79 +237,13 @@ internal static class Program
 
             PrintInfo($"Processing entry: '{entry}'", debugEnabled);
 
-            if (entry.Contains('*') || entry.Contains('?'))
+            if (IsLiteralAnchoredPath(entry))
             {
-                var pattern = entry.EndsWith('/') ? entry + "*" : entry;
-                var copied = 0;
-
-                foreach (var file in EnumerateRepoFiles(repoRoot))
-                {
-                    var relativePath = Path.GetRelativePath(repoRoot, file)
-                        .Replace(Path.DirectorySeparatorChar, '/');
-
-                    if (!MatchesGlob(relativePath, pattern))
-                    {
-                        continue;
-                    }
-
-                    if (!IsGitignored(relativePath, gitignoreEntries))
-                    {
-                        PrintInfo($"Glob match '{relativePath}' is not gitignored, skipping", debugEnabled);
-                        continue;
-                    }
-
-                    var destination = Path.Combine(targetPath,
-                        relativePath.Replace('/', Path.DirectorySeparatorChar));
-                    var destinationDir = Path.GetDirectoryName(destination);
-                    if (destinationDir is not null)
-                    {
-                        Directory.CreateDirectory(destinationDir);
-                    }
-
-                    File.Copy(file, destination, overwrite: true);
-                    PrintInfo($"Copied glob match: '{relativePath}'", debugEnabled);
-                    copied++;
-                }
-
-                if (copied == 0)
-                {
-                    PrintWarning($"Glob '{entry}' matched no gitignored files. Skipping");
-                }
-
-                continue;
-            }
-
-            if (!IsGitignored(entry, gitignoreEntries))
-            {
-                PrintInfo($"Entry '{entry}' is not gitignored, skipping", debugEnabled);
-                continue;
-            }
-            PrintInfo($"Entry '{entry}' matched gitignore pattern", debugEnabled);
-
-            var sourcePath = Path.Combine(repoRoot, entry);
-            if (File.Exists(sourcePath))
-            {
-                PrintInfo($"Copying file: '{sourcePath}' -> '{targetPath}/{entry}'", debugEnabled);
-                var targetFilePath = Path.Combine(targetPath, entry);
-                var targetDir = Path.GetDirectoryName(targetFilePath);
-                if (targetDir is not null && !Directory.Exists(targetDir))
-                {
-                    Directory.CreateDirectory(targetDir);
-                    PrintInfo($"Created directory: {targetDir}", debugEnabled);
-                }
-                File.Copy(sourcePath, targetFilePath, overwrite: true);
-                PrintInfo($"File copied successfully: {entry}", debugEnabled);
-            }
-            else if (Directory.Exists(sourcePath))
-            {
-                PrintInfo($"Copying directory: '{sourcePath}' -> '{targetPath}/{entry}'", debugEnabled);
-                var destDir = Path.Combine(targetPath, entry);
-                CopyDirectory(sourcePath, destDir);
-                PrintInfo($"Directory copied successfully: {entry}", debugEnabled);
+                CopyLiteralEntry(entry.Trim('/'), repoRoot, targetPath, gitignoreEntries, debugEnabled);
             }
             else
             {
-                PrintWarning($"Entry '{entry}' not found on disk at '{sourcePath}'. Skipping");
+                CopyMatchingEntries(entry, repoRelativeFiles.Value, repoRoot, targetPath, gitignoreEntries, debugEnabled);
             }
         }
 
@@ -368,6 +304,77 @@ internal static class Program
         }
     }
 
+    private static void CopyLiteralEntry(string entry, string repoRoot, string targetPath, List<string> gitignoreEntries, bool debugEnabled)
+    {
+        if (!IsGitignored(entry, gitignoreEntries))
+        {
+            PrintInfo($"Entry '{entry}' is not gitignored, skipping", debugEnabled);
+            return;
+        }
+        PrintInfo($"Entry '{entry}' matched gitignore pattern", debugEnabled);
+
+        var sourcePath = Path.Combine(repoRoot, entry);
+        if (File.Exists(sourcePath))
+        {
+            PrintInfo($"Copying file: '{sourcePath}' -> '{targetPath}/{entry}'", debugEnabled);
+            CopyFilePreservingRelativePath(repoRoot, targetPath, entry);
+            PrintInfo($"File copied successfully: {entry}", debugEnabled);
+        }
+        else if (Directory.Exists(sourcePath))
+        {
+            PrintInfo($"Copying directory: '{sourcePath}' -> '{targetPath}/{entry}'", debugEnabled);
+            CopyDirectory(sourcePath, Path.Combine(targetPath, entry));
+            PrintInfo($"Directory copied successfully: {entry}", debugEnabled);
+        }
+        else
+        {
+            PrintWarning($"Entry '{entry}' not found on disk at '{sourcePath}'. Skipping");
+        }
+    }
+
+    private static void CopyMatchingEntries(string entry, List<string> repoRelativeFiles, string repoRoot, string targetPath, List<string> gitignoreEntries, bool debugEnabled)
+    {
+        var copiedFileCount = 0;
+        foreach (var relativePath in repoRelativeFiles)
+        {
+            if (!MatchesPathPattern(relativePath, entry))
+            {
+                continue;
+            }
+
+            if (!IsGitignored(relativePath, gitignoreEntries))
+            {
+                PrintInfo($"Match '{relativePath}' is not gitignored, skipping", debugEnabled);
+                continue;
+            }
+
+            CopyFilePreservingRelativePath(repoRoot, targetPath, relativePath);
+            PrintInfo($"Copied match: '{relativePath}'", debugEnabled);
+            copiedFileCount++;
+        }
+
+        if (copiedFileCount == 0)
+        {
+            PrintWarning($"Entry '{entry}' matched no gitignored files. Skipping");
+        }
+    }
+
+    private static void CopyFilePreservingRelativePath(string sourceRoot, string targetRoot, string relativePath)
+    {
+        var platformRelativePath = relativePath.Replace('/', Path.DirectorySeparatorChar);
+        var destination = Path.Combine(targetRoot, platformRelativePath);
+        var destinationDir = Path.GetDirectoryName(destination);
+        if (destinationDir is not null)
+        {
+            Directory.CreateDirectory(destinationDir);
+        }
+
+        File.Copy(Path.Combine(sourceRoot, platformRelativePath), destination, overwrite: true);
+    }
+
+    private static string ToRepoRelativePath(string repoRoot, string file)
+        => Path.GetRelativePath(repoRoot, file).Replace(Path.DirectorySeparatorChar, '/');
+
     private static List<string> ParseGitignoreEntries(string gitignoreContent)
     {
         return gitignoreContent.Split('\n', StringSplitOptions.RemoveEmptyEntries)
@@ -377,31 +384,41 @@ internal static class Program
             .ToList();
     }
 
-    private static bool IsGitignored(string entry, List<string> gitignoreEntries)
+    private static bool IsGitignored(string relativePath, List<string> gitignoreEntries)
+        => gitignoreEntries.Any(pattern => MatchesPathPattern(relativePath, pattern));
+
+    private static bool ContainsWildcard(string pattern) => pattern.Contains('*') || pattern.Contains('?');
+
+    /// <summary>
+    /// Following gitignore semantics, a pattern containing a slash (other than a trailing one)
+    /// is relative to the repository root; otherwise it matches at any directory depth.
+    /// </summary>
+    private static bool IsAnchoredPattern(string pattern) => pattern.TrimEnd('/').Contains('/');
+
+    private static bool IsLiteralAnchoredPath(string entry) => IsAnchoredPattern(entry) && !ContainsWildcard(entry);
+
+    /// <summary>
+    /// Checks a repository-relative path against a gitignore-style pattern. A match on any
+    /// leading directory also matches everything beneath it.
+    /// </summary>
+    private static bool MatchesPathPattern(string relativePath, string pattern)
     {
-        foreach (var pattern in gitignoreEntries)
+        var pathSegments = relativePath.Split('/');
+
+        if (!IsAnchoredPattern(pattern))
         {
-            if (entry == pattern)
-            {
-                return true;
-            }
-
-            if (entry.StartsWith(pattern + "/"))
-            {
-                return true;
-            }
-
-            if (pattern.Contains('*') || pattern.Contains('?'))
-            {
-                if (MatchesGlob(entry, pattern))
-                {
-                    return true;
-                }
-            }
+            var segmentPattern = pattern.TrimEnd('/');
+            return pathSegments.Any(segment => MatchesExactlyOrByGlob(segment, segmentPattern));
         }
 
-        return false;
+        var anchoredPattern = pattern.Trim('/');
+        return Enumerable.Range(1, pathSegments.Length)
+            .Select(depth => string.Join('/', pathSegments, 0, depth))
+            .Any(pathPrefix => MatchesExactlyOrByGlob(pathPrefix, anchoredPattern));
     }
+
+    private static bool MatchesExactlyOrByGlob(string text, string pattern)
+        => ContainsWildcard(pattern) ? MatchesGlob(text, pattern) : text == pattern;
 
     private static bool MatchesGlob(string text, string pattern)
     {
